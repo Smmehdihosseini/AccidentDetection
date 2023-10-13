@@ -9,7 +9,9 @@ from datetime import datetime
 
 
 class Trainer:
-    def __init__(self, model,
+    def __init__(self,
+                 name,
+                 model,
                  train_loader,
                  val_loader,
                  device="cuda:0",
@@ -23,6 +25,7 @@ class Trainer:
                  anneal_strategy='cos',
                  base_checkpoint_dir="model_checkpoints"):
         
+        self.name = name
         self.model = model
         self.train_loader = train_loader
         self.val_loader = val_loader
@@ -30,7 +33,7 @@ class Trainer:
         self.batch_verbose = batch_verbose
         self.num_epochs = num_epochs
         self.early_stopping_limit = early_stopping_limit
-        self.base_checkpoint_dir = base_checkpoint_dir
+        self.base_checkpoint_dir = os.path.join(base_checkpoint_dir, self.name)
         self.anneal_strategy = anneal_strategy
 
         self.model.to(self.device)
@@ -73,9 +76,9 @@ class Trainer:
         self.model.train()
 
     def train_epoch(self):
-        
+
         self.model.train()
-        all_losses = []
+        self.all_losses = []
 
         for i, (images, labels_accident) in enumerate(self.train_loader):
             images = images.to(self.device)
@@ -95,7 +98,7 @@ class Trainer:
             self.optimizer.step()
 
             # Record loss
-            all_losses.append(loss_accident.item())
+            self.all_losses.append(loss_accident.item())
 
             # Print loss every 10 batches
             if i % self.batch_verbose == 0:
@@ -104,13 +107,13 @@ class Trainer:
             # Step the scheduler
             self.scheduler.step()
 
-        avg_loss = np.mean(all_losses)
-        return avg_loss
+        self.avg_loss = np.mean(self.all_losses)
+        return self.avg_loss
 
     def validate_epoch(self):
 
         self.model.eval()
-        val_losses = []
+        self.val_losses = []
 
         with torch.no_grad():
             for images, labels_accident in self.val_loader:
@@ -118,25 +121,28 @@ class Trainer:
                 labels_accident = labels_accident.to(self.device)
 
                 # Forward pass
-                severity_pred = self.model(images)
-                loss_accident = self.criterion(severity_pred, labels_accident)
+                labels_pred = self.model(images)
+                loss_accident = self.criterion(labels_pred, labels_accident)
 
-                val_losses.append(loss_accident.item())
+                self.val_losses.append(loss_accident.item())
 
-        avg_val_loss = np.mean(val_losses)
-        return avg_val_loss
+        self.avg_val_loss = np.mean(self.val_losses)
+        return self.avg_val_loss
 
     def save_model(self, path):
         torch.save(self.model.state_dict(), path)
 
     def train(self):
 
-        best_val_loss = float('inf')
+        self.best_val_loss = float('inf')
         early_stopping_counter = 0
 
         start_time_str = datetime.now().strftime("%Y%m%d-%H%M%S")
         current_checkpoint_dir = os.path.join(self.base_checkpoint_dir, start_time_str)
         os.makedirs(current_checkpoint_dir, exist_ok=True)
+
+        self.train_total_loss = []
+        self.val_total_loss = []
 
         # Initialize timer
         start_time = time.time()
@@ -150,12 +156,15 @@ class Trainer:
             epoch_start_time = time.time()
 
             avg_loss = self.train_epoch()
+            self.train_total_loss.append(avg_loss)
             avg_val_loss = self.validate_epoch()
+            self.val_total_loss.append(avg_val_loss)
+            
             print(f"+ Average Training/Validation Loss: {avg_loss:.4f}/{avg_val_loss:.4f}")
 
-            if avg_val_loss < best_val_loss:
-                best_val_loss = avg_val_loss
-                best_model_path = os.path.join(self.base_checkpoint_dir, f"best_model_epoch_{epoch + 1}.pth")
+            if avg_val_loss < self.best_val_loss:
+                self.best_val_loss = avg_val_loss
+                best_model_path = os.path.join(current_checkpoint_dir, f"best_model_epoch_{epoch + 1}.pth")
                 self.save_model(best_model_path)
                 print(f"* Saved New Best Model At {best_model_path}")
                 early_stopping_counter = 0
